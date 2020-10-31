@@ -48,6 +48,56 @@ class Main implements Runnable {
             }
         }
         writeModels(swagger)
+        writeApis(swagger)
+    }
+
+    void writeApis(Map swagger) {
+        swagger.api = [:]
+        swagger.api.defaultClassName = toClassName(swagger.info.title)
+        swagger.api.packageName = packageName
+        swagger.api.classNames = [] as Set
+
+        swagger.paths.each{path, detail ->
+            def pathSegments = path.split('/')
+            if (pathSegments.length < 2) {
+                detail.className = swagger.api.defaultClassName
+            } else {
+                detail.className = toClassName(pathSegments[1])
+            }
+            swagger.api.classNames << detail.className
+        }
+
+        def packagePath = new File(outputDir, packageName.replace('.' as char, File.separatorChar))
+        swagger.api.classNames.each {className ->
+
+            swagger.api.filename = new File(packagePath,  className + '.java')
+            swagger.api.package = packageName
+
+            (swagger.api.filename as File).parentFile.mkdirs()
+            swagger.api.filename.withPrintWriter { apiFile ->
+
+                writeApiStart(apiFile, swagger, className)
+                swagger.paths.findAll { path, detail ->
+                    detail.className == className
+                }.each { path, detail ->
+                    writeApiPath(apiFile, swagger, path, detail)
+                }
+                writeApiEnd(apiFile, swagger)
+            }
+        }
+    }
+
+    void writeApiStart(PrintWriter apiFile, Map swagger, String className) {
+        apiFile.println "package ${swagger.api.packageName};\n\n"
+        apiFile.println("class ${className} {")
+    }
+
+    void writeApiPath(PrintWriter apiFile, Map swagger, String path, Map pathDetails) {
+        apiFile.println("// ${path}")
+    }
+
+    void writeApiEnd(PrintWriter apiFile, Map swagger) {
+        apiFile.println("}")
     }
 
     void writeModels(Map swagger) {
@@ -64,11 +114,13 @@ class Main implements Runnable {
                 modelFile.println()
 
                 if (model?.classType == 'class') {
-                    modelFile.println("@lombok.Data")
+                    modelFile.println("@lombok.Data\n@lombok.Builder")
                     modelFile.println "@ApiModel(description = \"${model?.description}\")"
                     modelFile.println "public class ${name} {"
                     model?.properties?.each { propName, propDetail ->
-                        modelFile.println "    private ${propDetail?.propType} ${propDetail.propName};"
+                        modelFile.println "    @ApiModelProperty(value = \"${propDetail.description}\")"
+                        modelFile.println "    @JsonProperty(\"${propName}\")"
+                        modelFile.println "    private ${propDetail?.propType} ${propDetail.propName};\n"
                     }
                 } else if (model?.classType == 'enum') {
                     modelFile.println("/**\n * ${model?.description}\n */")
@@ -85,17 +137,19 @@ class Main implements Runnable {
 
     def writeModel(Map swagger, Closure<Map> eachModel) {
 
-        def packagePath = new File(outputDir, packageName.replace('.' as char, File.separatorChar))
+        def modelPackageName = "${packageName}.model"
+        def packagePath = new File(outputDir, modelPackageName.replace('.' as char, File.separatorChar))
         swagger.definitions.each { name, model ->
 
-            model.package = packageName
+            model.package = modelPackageName
             model.description = model?.description?.replace('\n', '\\n')
 
             // should the model be skipped? e.g. if it doesn't have any properties
 
             model.imports = [
                     'io.swagger.annotations.ApiModel',
-                    'io.swagger.annotations.ApiModelProperty'
+                    'io.swagger.annotations.ApiModelProperty',
+                    'com.fasterxml.jackson.annotation.JsonProperty'
             ].toSet()
 
             if (model?.type == 'object') {
@@ -121,11 +175,14 @@ class Main implements Runnable {
             }
 
             if (!model.skip) {
-
                 // create File name for model
                 model.filename = new File(packagePath, "${name}.java")
                 eachModel(name, model)
             }
         }
+    }
+
+    String toClassName(String name) {
+        name.replaceAll(/[^\p{Alnum}]/, '').trim().toLowerCase().capitalize() + 'Api'
     }
 }
